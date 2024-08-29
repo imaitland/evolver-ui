@@ -10,7 +10,6 @@ import {
   Brush,
 } from "recharts";
 import { vialColors } from "~/utils/chart/colors";
-import { SensorData } from "~/utils/getSensorProperty";
 
 type TimestampData = {
   timestamp: number;
@@ -18,24 +17,19 @@ type TimestampData = {
   [key: string]: number;
 };
 
-function transformToTimestamp(data: SensorData): {
-  formattedData: TimestampData[];
-  keys: string[];
-} {
-  const keys = new Set<string>();
-  const formattedData = Array.from(data).map(([timestamp, vials]) => {
-    const chartable = Array.from(vials).reduce(
-      (acc, [vial, value]) => {
-        keys.add(`vial-${vial}`);
-        acc[`vial-${vial}`] = value as number;
-        return acc;
-      },
-      { timestamp: timestamp } as TimestampData,
-    );
-    return chartable;
+const processData = (data, vials) => {
+  return data.map((entry) => {
+    const processedEntry = {
+      timestamp: entry.timestamp,
+    };
+
+    vials.forEach((vial) => {
+      processedEntry[`vial_${vial}`] = entry.data[vial]?.raw;
+    });
+
+    return processedEntry;
   });
-  return { formattedData, keys: Array.from(keys) };
-}
+};
 
 // Helper function to format timestamp to a human-readable format with ms precision
 const formatTimestamp = (timestamp: number) => {
@@ -87,16 +81,16 @@ const tickFormatter = (
   return `${hours}:${minutes}:${seconds}.${milliseconds}`;
 };
 
-export const SensorChart = ({ data }: { data: SensorData }) => {
-  const { formattedData, keys } = transformToTimestamp(data);
+export const SensorChart = ({ rawData, vials }) => {
+  const formattedData = processData(rawData, vials);
 
-  const chartLines = keys.map((key, ix) => (
-    // random color for each linechartColors
+  const chartLines = vials.map((vial, ix) => (
     <Line
-      key={key}
+      key={vial}
       type="monotone"
-      dataKey={key}
+      dataKey={`vial_${vial}`}
       stroke={vialColors[ix % vialColors.length]}
+      name={`Vial ${vial}`}
     />
   ));
 
