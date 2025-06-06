@@ -150,7 +150,7 @@ export async function loader({ request }: Route.LoaderArgs) {
 
 export async function clientLoader({ serverLoader }: Route.ClientLoaderArgs) {
   const { device, theme } = await serverLoader();
-  const evolverClient = createEvolverClient(device.url); // (5) create an Evolver client.
+  const evolverClient = createEvolverClient(device.url);
 
   const [describeEvolver, evolverState] = await Promise.all([
     Evolver.describe({ client: evolverClient }),

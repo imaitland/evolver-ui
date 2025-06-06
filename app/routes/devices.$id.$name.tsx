@@ -58,7 +58,6 @@ const schema = z.discriminatedUnion("intent", [
 export async function clientAction({ request }: Route.ClientActionArgs) {
   const formData = await request.formData();
 
-  // Prelim validation
   const submission = parseWithZod(formData, { schema: schema });
 
   if (submission.status !== "success") {
