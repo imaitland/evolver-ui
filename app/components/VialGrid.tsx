@@ -10,7 +10,7 @@ const DataTable = ({
   filteredProperties = [],
 }: {
   vialIndex: number;
-  data: { [key: string]: number };
+  data: Record<string, Record<string, number | string>>;
   excludedProperties?: string[];
   filteredProperties?: string[];
 }) => {
@@ -23,7 +23,10 @@ const DataTable = ({
             <th>
               <Link
                 className={"font-mono"}
-                to={ROUTES.device.hardware.list({ id, name })}
+                to={ROUTES.device.hardware.list({
+                  id: id ?? "",
+                  name: name ?? "",
+                })}
               >
                 {vialIndex}
               </Link>{" "}
@@ -51,7 +54,7 @@ const DataTable = ({
                     >
                       <Link
                         className="link"
-                        to={`${ROUTES.device.hardware.history({ id, name, hardwareName: mainKey })}?vials=${vialIndex}`}
+                        to={`${ROUTES.device.hardware.history({ id: id ?? "", name: name ?? "", hardwareName: mainKey })}?vials=${vialIndex}`}
                       >
                         {mainKey}
                       </Link>
@@ -61,7 +64,7 @@ const DataTable = ({
                     <td>
                       <Link
                         className="link"
-                        to={`${ROUTES.device.hardware.history({ id, name, hardwareName: mainKey })}?properties=${subKey}&vials=${vialIndex}`}
+                        to={`${ROUTES.device.hardware.history({ id: id ?? "", name: name ?? "", hardwareName: mainKey })}?properties=${subKey}&vials=${vialIndex}`}
                       >
                         {subKey}
                       </Link>
@@ -92,7 +95,7 @@ export function FilterableVialGrid({
   excludedProperties = [],
 }: {
   vialCount: number;
-  stateData: { [x: string]: undefined };
+  stateData: Record<string, { [key: string]: { [key: string]: number } }>;
   id: string;
   excludedProperties?: string[];
 }) {
