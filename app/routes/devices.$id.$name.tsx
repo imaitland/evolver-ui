@@ -20,6 +20,8 @@ import { WarningModal } from "~/components/Modals";
 import { DefaultHydrateFallback } from "~/components/HydrateFallback";
 import { getDeviceById } from "~/utils/evolverClient.server";
 import { createEvolverClient } from "~/utils/evolverClient.client";
+import { getDeviceById as getLocalDeviceById } from "~/utils/getDeviceById.client";
+import { db as localDb } from "~/utils/localDb.client";
 import { deviceInfo } from "../cookies.server";
 import { useFormErrorNotifications } from "~/utils/useFormErrorNotifications";
 import { evolverApiCall } from "~/utils/evolverApiCall";
@@ -113,9 +115,42 @@ export async function loader({ params }: Route.LoaderArgs) {
 
 // All evolver client interactions must originate on the client so that the core functionality of the the system works without an internet connection over the local network.
 // This means only using the Evolver client in the clientLoader, components and clientAction.
-export async function clientLoader({ serverLoader }: Route.ClientLoaderArgs) {
-  const { device } = await serverLoader(); // (4) get the device info - [TODO] switch case on "offline" flag - indicating the UI is hosted on the device itself and has no internet access, in this case device info (e.g. url) can be in localStorage or similar.
-  const evolverClient = createEvolverClient(device.url); // (5) create an Evolver client.
+export async function clientLoader({ serverLoader, params }: Route.ClientLoaderArgs) {
+  let device;
+  
+  try {
+    // Try to get device from server
+    const serverData = await serverLoader();
+    device = serverData.device;
+    
+    // Sync to local database
+    const existing = await localDb.devices
+      .where('device_id')
+      .equals(device.device_id)
+      .first();
+      
+    if (!existing) {
+      await localDb.devices.add({
+        ...device,
+        syncStatus: 'synced',
+        lastSyncAt: new Date(),
+      });
+    } else {
+      await localDb.devices.update(existing.id!, {
+        url: device.url,
+        name: device.name,
+        updatedAt: new Date(),
+        syncStatus: 'synced',
+        lastSyncAt: new Date(),
+      });
+    }
+  } catch (error) {
+    // Server unavailable, use local data
+    console.warn('Server unavailable, using local device data:', error);
+    device = await getLocalDeviceById(params.id);
+  }
+  
+  const evolverClient = createEvolverClient(device.url);
 
   const [evolverState] = await Promise.all([
     Evolver.describe({ client: evolverClient }),

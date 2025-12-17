@@ -36,6 +36,8 @@
     "@rjsf/validator-ajv8": "6.0.0-alpha.0",
     "@tailwindcss/vite": "^4.0.9",
     "clsx": "^2.1.1",
+    "dexie": "^4.0.11",
+    "dexie-react-hooks": "^1.1.7",
     "isbot": "^4.1.0",
     "json-edit-react": "^1.15.4",
     "njv": "^2.0.0",

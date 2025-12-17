@@ -13,6 +13,8 @@ import { ROUTES } from "~/utils/routes";
 import type { Route } from "./+types/devices.$id.$name.state";
 import { DefaultHydrateFallback } from "~/components/HydrateFallback";
 import { getDeviceById } from "~/utils/evolverClient.server";
+import { getDeviceById as getLocalDeviceById } from "~/utils/getDeviceById.client";
+import { db as localDb } from "~/utils/localDb.client";
 import { DefaultErrorBoundary } from "~/components/DefaultErrorBoundary";
 
 // TODO: don't do this, i think the evolver config has layout dims.
@@ -38,12 +40,42 @@ export async function loader({ params }: Route.LoaderArgs) {
   );
 }
 
-export async function clientLoader({ serverLoader }: Route.ClientLoaderArgs) {
-  const {
-    device: { url },
-  } = await serverLoader();
+export async function clientLoader({ serverLoader, params }: Route.ClientLoaderArgs) {
+  let device;
+  
+  try {
+    // Try to get device from server
+    const serverData = await serverLoader();
+    device = serverData.device;
+    
+    // Sync to local database
+    const existing = await localDb.devices
+      .where('device_id')
+      .equals(device.device_id)
+      .first();
+      
+    if (!existing) {
+      await localDb.devices.add({
+        ...device,
+        syncStatus: 'synced',
+        lastSyncAt: new Date(),
+      });
+    } else {
+      await localDb.devices.update(existing.id!, {
+        url: device.url,
+        name: device.name,
+        updatedAt: new Date(),
+        syncStatus: 'synced',
+        lastSyncAt: new Date(),
+      });
+    }
+  } catch (error) {
+    // Server unavailable, use local data
+    console.warn('Server unavailable, using local device data:', error);
+    device = await getLocalDeviceById(params.id);
+  }
 
-  const evolverClient = createEvolverClient(url);
+  const evolverClient = createEvolverClient(device.url);
 
   const [describeEvolver, evolverState] = await Promise.all([
     Evolver.describe({ client: evolverClient }),

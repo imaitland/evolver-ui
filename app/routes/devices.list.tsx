@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { type ActionFunctionArgs, redirect } from "react-router";
+import { type ActionFunctionArgs, redirect, data } from "react-router";
 import type { Route } from "./+types/devices.list";
 import { parseWithZod, getZodConstraint } from "@conform-to/zod";
 import { pingDevice } from "~/utils/pingDevice.server";
@@ -18,13 +18,19 @@ import clsx from "clsx";
 import { CloudIcon } from "@heroicons/react/24/outline";
 import { generateDeviceId } from "~/utils/generateDeviceId.server";
 import { toast as notify } from "react-toastify";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { DefaultErrorBoundary } from "~/components/DefaultErrorBoundary";
+import { db as localDb } from "~/utils/localDb.client";
+import { useLiveQuery } from "dexie-react-hooks";
 
-const IntentEnum = z.enum(["add_device", "delete_device"], {
-  required_error: "intent is required",
-  invalid_type_error: "must be one of, add_device or delete_device",
-});
+const IntentEnum = z.enum(
+  ["add_device", "delete_device", "sync_devices", "get_server_side_devices"],
+  {
+    required_error: "intent is required",
+    invalid_type_error:
+      "must be one of, add_device, delete_device, sync_devices, or get_server_side_devices",
+  },
+);
 
 const schema = z.discriminatedUnion("intent", [
   z.object({
@@ -38,9 +44,19 @@ const schema = z.discriminatedUnion("intent", [
     intent: z.literal(IntentEnum.Enum.delete_device),
     id: z.string(),
   }),
+  z.object({
+    intent: z.literal(IntentEnum.Enum.sync_devices),
+  }),
+  z.object({
+    intent: z.literal(IntentEnum.Enum.get_server_side_devices),
+  }),
 ]);
 
-export async function action({ request }: ActionFunctionArgs) {
+// This is the server actions
+export async function action({
+  request,
+  serverAction,
+}: Route.ClientActionArgs) {
   const formData = await request.formData();
   const submission = parseWithZod(formData, { schema });
   if (submission.status !== "success") {
@@ -85,6 +101,17 @@ export async function action({ request }: ActionFunctionArgs) {
         return submission.reply({ formErrors: errorMessages });
       }
       return null;
+
+    case IntentEnum.Enum.sync_devices:
+      // Server action handles this intent. fails gracefully if server is unavailable.
+      serverAction();
+      return null;
+
+    case IntentEnum.Enum.get_server_side_devices:
+      // Server action handles this intent. fails gracefully if server is unavailable.
+      serverAction();
+      return null;
+
     default:
       break;
   }
@@ -109,6 +136,128 @@ export const loader = async () => {
   return results;
 };
 
+export async function clientLoader({ serverLoader }: Route.ClientLoaderArgs) {
+  // sync flow - loaders - step 1  - get devices from local database.
+  // Load from local database first, there's a useEffect that will fetch devices from the server if the user is signed in.
+  // This allows the UI to be fast and responsive, while still syncing with the server in the background.
+  /*
+  const localDevices = await localDb.devices.toArray();
+
+  // Return local data immediately for fast UI
+  const localData = localDevices.map((device) => ({
+    name: device.name,
+    device_id: device.device_id,
+    url: device.url,
+    createdAt: device.createdAt,
+    status: "offline" as const,
+    syncStatus: device.syncStatus,
+  }));
+
+  return localData;
+  */
+}
+
+// clientActions first, conditionally call serverAction if user is signed in and wants to sync with remote db.
+export async function clientAction({
+  serverAction,
+  request,
+}: Route.ClientActionArgs) {
+  // sync flow - actions - step 1 - handle form submission, update local database, and sync with server if user is signed in..
+  const formData = await request.formData();
+  const submission = parseWithZod(formData, { schema });
+
+  if (submission.status !== "success") {
+    return submission.reply();
+  }
+
+  const { intent } = submission.value;
+
+  switch (intent) {
+    case IntentEnum.Enum.add_device: {
+      const { url } = submission.value;
+      const device_id = crypto.randomUUID();
+
+      // Add to local database immediately
+      await localDb.devices.add({
+        device_id,
+        url: url as string,
+        name: "New Device",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        syncStatus: "pending",
+      });
+
+      // Try to sync with server
+      try {
+        const result = await serverAction();
+
+        // Update local device with server response
+        if (result && "error" in result) {
+          // Handle server error
+          await localDb.devices.where("device_id").equals(device_id).modify({
+            syncStatus: "error",
+          });
+          return result;
+        }
+
+        // Server succeeded, mark as synced
+        await localDb.devices.where("device_id").equals(device_id).modify({
+          syncStatus: "synced",
+          lastSyncAt: new Date(),
+        });
+
+        return result;
+      } catch (error) {
+        // Server unavailable, keep as pending
+        console.error("Failed to sync with server:", error);
+        await localDb.devices.where("device_id").equals(device_id).modify({
+          syncStatus: "error",
+        });
+
+        // Still redirect to device page (offline mode)
+        return redirect(
+          ROUTES.device.state({ id: device_id, name: "New Device" }),
+        );
+      }
+    }
+
+    case IntentEnum.Enum.delete_device: {
+      const { id } = submission.value;
+
+      // Delete from local database immediately
+      await localDb.devices.where("device_id").equals(id).delete();
+
+      // Try to sync with server
+      try {
+        const result = await serverAction();
+        return result;
+      } catch (error) {
+        // Server unavailable, deletion still succeeded locally
+        console.error("Failed to sync deletion with server:", error);
+        return redirect(ROUTES.static.devices);
+      }
+    }
+
+    case IntentEnum.Enum.sync_devices: {
+      // Manually sync all devices with server
+      try {
+        // Sync the data
+        await serverAction();
+
+        notify.success("Devices synced successfully");
+        return { success: true };
+      } catch (error) {
+        console.error("Manual sync failed:", error);
+        notify.error("Failed to sync devices");
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : "Unknown error",
+        };
+      }
+    }
+  }
+}
+
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   return (
     <DefaultErrorBoundary
@@ -123,6 +272,18 @@ export default function DevicesList() {
   const loaderData = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const submit = useSubmit();
+  const [syncingDevices, setSyncingDevices] = useState<Set<string>>(new Set());
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  // Use live query to reactively update when local DB changes
+  const localDevices = useLiveQuery(() => localDb.devices.toArray(), []);
+
+  // Trigger sync on mount
+  useEffect(() => {
+    const formData = new FormData();
+    formData.append("intent", IntentEnum.Enum.sync_devices);
+    submit(formData, { method: "post" });
+  }, []);
 
   const [form, fields] = useForm({
     lastResult: actionData,
@@ -153,8 +314,81 @@ export default function DevicesList() {
     submit(formData, { method: "delete" });
   };
 
+  const syncDevice = async (device_id: string) => {
+    // Add to syncing set
+    setSyncingDevices((prev) => new Set(prev).add(device_id));
+
+    try {
+      // Get the device from local DB
+      const device = await localDb.devices
+        .where("device_id")
+        .equals(device_id)
+        .first();
+
+      if (!device) return;
+
+      // Update status to show syncing
+      await localDb.devices.update(device.id!, {
+        syncStatus: "pending",
+      });
+
+      // Try to ping the device through the server
+      const response = await fetch(`/devices/list`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          intent: "add_device",
+          url: device.url,
+        }),
+      });
+
+      if (response.ok) {
+        // Sync successful
+        await localDb.devices.update(device.id!, {
+          syncStatus: "synced",
+          lastSyncAt: new Date(),
+        });
+        notify.success("Device synced successfully");
+      } else {
+        // Sync failed
+        await localDb.devices.update(device.id!, {
+          syncStatus: "error",
+        });
+        notify.error("Failed to sync device");
+      }
+    } catch (error) {
+      console.error("Manual sync failed:", error);
+      // Update to error status
+      const device = await localDb.devices
+        .where("device_id")
+        .equals(device_id)
+        .first();
+
+      if (device) {
+        await localDb.devices.update(device.id!, {
+          syncStatus: "error",
+        });
+      }
+      notify.error("Failed to sync device - server unavailable");
+    } finally {
+      // Remove from syncing set
+      setSyncingDevices((prev) => {
+        const next = new Set(prev);
+        next.delete(device_id);
+        return next;
+      });
+    }
+  };
+
   const deviceTableItems = loaderData.map(
     ({ device_id, url, status, createdAt, name }, ix) => {
+      // Find sync status from local devices
+      const localDevice = localDevices?.find((d) => d.device_id === device_id);
+      const syncStatus = localDevice?.syncStatus || "synced";
+      console.log(syncStatus);
+
       return (
         <tr key={device_id}>
           <th>{ix + 1}</th>
@@ -198,6 +432,50 @@ export default function DevicesList() {
             </div>
           </td>
           <td>
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1">
+                <div className="inline-grid *:[grid-area:1/1]">
+                  {syncStatus === "error" && (
+                    <div className="status status-error animate-ping"></div>
+                  )}
+                  <div
+                    className={clsx(
+                      "status",
+                      syncStatus === "synced" && "status-success",
+                      syncStatus === "pending" && "status-warning",
+                      syncStatus === "error" && "status-error",
+                    )}
+                  ></div>
+                </div>
+                <span className="">
+                  {syncStatus === "synced" && "synced"}
+                  {syncStatus === "pending" && "pending"}
+                  {syncStatus === "error" && "error"}
+                </span>
+              </div>
+              {syncStatus !== "synced" && (
+                <button
+                  className={clsx(
+                    "btn btn-xs",
+                    syncStatus === "pending" && "btn-warning",
+                    syncStatus === "error" && "btn-error",
+                  )}
+                  onClick={() => syncDevice(device_id)}
+                  disabled={syncingDevices.has(device_id)}
+                >
+                  {syncingDevices.has(device_id) ? (
+                    <span className="loading loading-spinner loading-xs"></span>
+                  ) : syncStatus === "pending" ? (
+                    "sync"
+                  ) : (
+                    "retry"
+                  )}
+                </button>
+              )}
+            </div>
+          </td>
+
+          <td>
             <button onClick={() => removeDevice(device_id)}>forget</button>
           </td>
         </tr>
@@ -207,7 +485,7 @@ export default function DevicesList() {
 
   return (
     <>
-      <div className="flex">
+      <div className="flex justify-between items-start">
         <Form
           method="POST"
           action="/devices/list"
@@ -244,6 +522,19 @@ export default function DevicesList() {
             </button>
           </div>
         </Form>
+
+        {localDevices && localDevices.length > 0 && (
+          <button
+            className="btn btn-sm"
+            onClick={() => {
+              const formData = new FormData();
+              formData.append("intent", IntentEnum.Enum.sync_devices);
+              submit(formData, { method: "post" });
+            }}
+          >
+            Sync All
+          </button>
+        )}
       </div>
       <div className="bg-base-300 rounded-box p-4">
         {deviceTableItems.length === 0 && (
@@ -273,6 +564,7 @@ export default function DevicesList() {
                   <th>name</th>
                   <th>url</th>
                   <th>status</th>
+                  <th>sync</th>
                   <th></th>
                 </tr>
               </thead>
