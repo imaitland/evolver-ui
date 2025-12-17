@@ -22,6 +22,7 @@ import { useEffect, useState } from "react";
 import { DefaultErrorBoundary } from "~/components/DefaultErrorBoundary";
 import { db as localDb } from "~/utils/localDb.client";
 import { useLiveQuery } from "dexie-react-hooks";
+import { pingDevice as pingDeviceClient } from "~/utils/pingDevice.client";
 
 const IntentEnum = z.enum(
   ["add_device", "delete_device", "sync_devices", "get_server_side_devices"],
@@ -52,11 +53,8 @@ const schema = z.discriminatedUnion("intent", [
   }),
 ]);
 
-// This is the server actions
-export async function action({
-  request,
-  serverAction,
-}: Route.ClientActionArgs) {
+// This is the server action
+export async function action({ request }: Route.ActionArgs) {
   const formData = await request.formData();
   const submission = parseWithZod(formData, { schema });
   if (submission.status !== "success") {
@@ -89,7 +87,6 @@ export async function action({
         }
         return submission.reply({ formErrors: errorMessages });
       }
-      return null;
 
     case IntentEnum.Enum.delete_device:
       try {
@@ -100,20 +97,21 @@ export async function action({
         const errorMessages = ["unable to delete device"];
         return submission.reply({ formErrors: errorMessages });
       }
-      return null;
 
-    case IntentEnum.Enum.sync_devices:
-      // Server action handles this intent. fails gracefully if server is unavailable.
-      serverAction();
-      return null;
+    case IntentEnum.Enum.sync_devices: {
+      // Return server-side devices for syncing with client
+      const devices = await db.device.findMany();
+      return { success: true, devices };
+    }
 
-    case IntentEnum.Enum.get_server_side_devices:
-      // Server action handles this intent. fails gracefully if server is unavailable.
-      serverAction();
-      return null;
+    case IntentEnum.Enum.get_server_side_devices: {
+      // Return all devices from server database
+      const devices = await db.device.findMany();
+      return { devices };
+    }
 
     default:
-      break;
+      return null;
   }
 }
 
@@ -137,24 +135,46 @@ export const loader = async () => {
 };
 
 export async function clientLoader({ serverLoader }: Route.ClientLoaderArgs) {
-  // sync flow - loaders - step 1  - get devices from local database.
-  // Load from local database first, there's a useEffect that will fetch devices from the server if the user is signed in.
-  // This allows the UI to be fast and responsive, while still syncing with the server in the background.
-  /*
+  // Load devices from local IndexedDB
   const localDevices = await localDb.devices.toArray();
 
-  // Return local data immediately for fast UI
-  const localData = localDevices.map((device) => ({
-    name: device.name,
-    device_id: device.device_id,
-    url: device.url,
-    createdAt: device.createdAt,
-    status: "offline" as const,
-    syncStatus: device.syncStatus,
-  }));
+  // Ping each device from the client to get real online/offline status
+  const deviceStatusPromises = localDevices.map(({ url }) =>
+    pingDeviceClient(url)
+  );
+  const resolved = await Promise.allSettled(deviceStatusPromises);
 
-  return localData;
-  */
+  // Return devices with real status from client-side pings
+  return localDevices.map((device, index) => {
+    const result = resolved[index];
+    const isOnline =
+      result.status === "fulfilled" && result.value.online;
+    const name =
+      result.status === "fulfilled" && result.value.name !== "unknown"
+        ? result.value.name
+        : device.name;
+
+    return {
+      name,
+      device_id: device.device_id,
+      url: device.url,
+      createdAt: device.createdAt,
+      status: isOnline ? ("online" as const) : ("offline" as const),
+      syncStatus: device.syncStatus,
+    };
+  });
+}
+clientLoader.hydrate = true;
+
+export function HydrateFallback() {
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="skeleton h-10 w-80"></div>
+      <div className="bg-base-300 rounded-box p-4">
+        <div className="skeleton h-32 w-full"></div>
+      </div>
+    </div>
+  );
 }
 
 // clientActions first, conditionally call serverAction if user is signed in and wants to sync with remote db.
@@ -163,7 +183,8 @@ export async function clientAction({
   request,
 }: Route.ClientActionArgs) {
   // sync flow - actions - step 1 - handle form submission, update local database, and sync with server if user is signed in..
-  const formData = await request.formData();
+  // Clone the request before reading formData so serverAction can still read the original body
+  const formData = await request.clone().formData();
   const submission = parseWithZod(formData, { schema });
 
   if (submission.status !== "success") {
@@ -247,6 +268,10 @@ export async function clientAction({
         notify.success("Devices synced successfully");
         return { success: true };
       } catch (error) {
+        // Ignore AbortError - this happens when navigation is cancelled (e.g., component unmount, another action started)
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return { success: false, aborted: true };
+        }
         console.error("Manual sync failed:", error);
         notify.error("Failed to sync devices");
         return {

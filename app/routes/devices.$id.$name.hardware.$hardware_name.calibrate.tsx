@@ -4,12 +4,14 @@ import {
   useLoaderData,
   useParams,
   useSubmit,
+  useRouteLoaderData,
 } from "react-router";
 import * as Evolver from "client/services.gen";
 import { z } from "zod";
 import { parseWithZod } from "@conform-to/zod";
 import { WrenchScrewdriverIcon } from "@heroicons/react/24/solid";
 import { createEvolverClient } from "~/utils/evolverClient.client";
+import { getDeviceById } from "~/utils/getDeviceById.client";
 import { deviceInfo } from "~/cookies.server";
 import { ROUTES } from "~/utils/routes";
 import { useFormErrorNotifications } from "~/utils/useFormErrorNotifications";
@@ -278,13 +280,13 @@ export async function loader({ request }: Route.LoaderArgs) {
   };
 }
 
-// Client loader fetches calibration data
+// Client loader fetches calibration data directly from evolver device
 export async function clientLoader({
   params,
-  serverLoader,
 }: Route.ClientLoaderArgs) {
-  const { hardware_name } = params;
-  const { device } = await serverLoader();
+  const { hardware_name, id } = params;
+  // Get device URL from local IndexedDB (not server)
+  const device = await getDeviceById(id!);
   const evolverClient = createEvolverClient(device.url);
 
   const [procedureActions, procedureState, hardware] = await Promise.all([
