@@ -1,11 +1,10 @@
 import { z } from "zod";
 import { type ActionFunctionArgs, redirect, data } from "react-router";
 import type { Route } from "./+types/devices.list";
-import { parseWithZod, getZodConstraint } from "@conform-to/zod";
+import { parseWithZod } from "@conform-to/zod";
 import { pingDevice } from "~/utils/pingDevice.server";
 import { db } from "~/utils/db.server";
 import { Prisma } from "@prisma/client";
-import { useForm, getFormProps, getInputProps } from "@conform-to/react";
 import {
   Form,
   Link,
@@ -16,7 +15,7 @@ import {
 import { ROUTES } from "~/utils/routes";
 import clsx from "clsx";
 import { CloudIcon } from "@heroicons/react/24/outline";
-import { generateDeviceId } from "~/utils/generateDeviceId.server";
+import { generateDeviceId } from "~/utils/generateDeviceId";
 import { toast as notify } from "react-toastify";
 import { useEffect, useState } from "react";
 import { DefaultErrorBoundary } from "~/components/DefaultErrorBoundary";
@@ -182,7 +181,6 @@ export async function clientAction({
   serverAction,
   request,
 }: Route.ClientActionArgs) {
-  // sync flow - actions - step 1 - handle form submission, update local database, and sync with server if user is signed in..
   // Clone the request before reading formData so serverAction can still read the original body
   const formData = await request.clone().formData();
   const submission = parseWithZod(formData, { schema });
@@ -196,7 +194,7 @@ export async function clientAction({
   switch (intent) {
     case IntentEnum.Enum.add_device: {
       const { url } = submission.value;
-      const device_id = crypto.randomUUID();
+      const device_id = await generateDeviceId(url as string);
 
       // Add to local database immediately
       await localDb.devices.add({
@@ -298,7 +296,6 @@ export default function DevicesList() {
   const actionData = useActionData<typeof action>();
   const submit = useSubmit();
   const [syncingDevices, setSyncingDevices] = useState<Set<string>>(new Set());
-  const [isSyncing, setIsSyncing] = useState(false);
 
   // Use live query to reactively update when local DB changes
   const localDevices = useLiveQuery(() => localDb.devices.toArray(), []);
@@ -310,27 +307,12 @@ export default function DevicesList() {
     submit(formData, { method: "post" });
   }, []);
 
-  const [form, fields] = useForm({
-    lastResult: actionData,
-    constraint: getZodConstraint(schema),
-    // validate field once user leaves the field
-    shouldValidate: "onInput",
-    // revalidate field as user types again
-    shouldRevalidate: "onInput",
-    // run validation logic on the client
-    onValidate({ formData }) {
-      return parseWithZod(formData, { schema });
-    },
-  });
-
+  // Show validation/action errors via toast
   useEffect(() => {
-    if (form?.errors) {
-      notify.dismiss();
-      form.errors.forEach((message) => {
-        notify.error(message);
-      });
+    if (actionData?.error) {
+      notify.error(Array.isArray(actionData.error) ? actionData.error.join(", ") : actionData.error);
     }
-  }, [form.errors]);
+  }, [actionData]);
 
   const removeDevice = (id: string) => {
     const formData = new FormData();
@@ -515,34 +497,22 @@ export default function DevicesList() {
           method="POST"
           action="/devices/list"
           className=""
-          {...getFormProps(form)}
         >
           <input
             name={"intent"}
-            defaultValue={IntentEnum.Enum.add_device}
-            className="hidden"
-          ></input>
+            value={IntentEnum.Enum.add_device}
+            type="hidden"
+          />
           <div className="join">
             <div className="flex flex-col">
               <input
+                name="url"
                 placeholder="url address"
-                {...getInputProps(fields.url, { type: "text" })}
-                className={clsx(
-                  "input input-bordered  max-w-xs join-item",
-                  fields.url.errors && "input-error",
-                )}
+                type="text"
+                className="input input-bordered max-w-xs join-item"
               />
-              <div className="text-error">
-                {fields.url.errors && (
-                  <div>
-                    {fields.url.errors.map((message) =>
-                      message.toLocaleLowerCase(),
-                    )}
-                  </div>
-                )}
-              </div>
             </div>
-            <button type="submit" className="btn btn-primary join-item ">
+            <button type="submit" className="btn btn-primary join-item">
               Add
             </button>
           </div>

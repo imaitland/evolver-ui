@@ -23,5 +23,7 @@ coverage
 /vitest-report
 audit.json
 /.react-router
+/slides
+.DS_STORE
 
 **/.claude/settings.local.json
